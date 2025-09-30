@@ -22,7 +22,7 @@ class AuthController extends Controller
         $validator = Validator::make($request->all(), [
             'email' => 'required|string|email|max:255|unique:users',
             'password' => 'required|string|min:6',
-            'fcm_token' => 'nullable|string', // [PERUBAHAN] Menambahkan validasi untuk fcm_token
+            'fcm_token' => 'nullable|string', // Validasi untuk fcm_token
         ]);
 
         if ($validator->fails()) {
@@ -33,13 +33,13 @@ class AuthController extends Controller
         }
 
         $user = User::create([
-            'name' => $request->email,
+            'name' => explode('@', $request->email)[0], // Menggunakan bagian email sebagai nama default
             'email' => $request->email,
             'password' => Hash::make($request->password),
-            'fcm_token' => $request->fcm_token, // [PERUBAHAN] Menyimpan fcm_token saat registrasi
+            'fcm_token' => $request->fcm_token, // Menyimpan fcm_token saat registrasi
         ]);
 
-        // [PERUBAHAN] Kirim notifikasi jika token ada
+        // Kirim notifikasi jika token ada
         if ($user->fcm_token) {
             $this->sendRegistrationNotification($user->fcm_token);
         }
@@ -55,6 +55,7 @@ class AuthController extends Controller
      */
     public function login(Request $request)
     {
+        // [PERBAIKAN] Validasi disederhanakan, hanya untuk email dan password
         $validator = Validator::make($request->all(), [
             'email' => 'required|email',
             'password' => 'required|string',
@@ -74,8 +75,10 @@ class AuthController extends Controller
             ], 401);
         }
 
-        // [PERUBAHAN] Jika berhasil login, buat dan kembalikan token API
         $user = User::where('email', $request->email)->firstOrFail();
+        
+        // [PERBAIKAN] Logika pembaruan fcm_token dihapus dari fungsi login
+        
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
@@ -87,7 +90,7 @@ class AuthController extends Controller
     }
 
     /**
-     * [FUNGSI BARU] Mengirim notifikasi selamat datang.
+     * Mengirim notifikasi selamat datang.
      */
     private function sendRegistrationNotification($fcmToken)
     {
@@ -101,12 +104,13 @@ class AuthController extends Controller
             $messaging->send($message);
         } catch (\Exception $e) {
             // Jika gagal, catat error di log Laravel tapi jangan hentikan proses registrasi
-            Log::error('Failed to send FCM notification: ' . $e->getMessage());
+            Log::error('Gagal mengirim notifikasi FCM: ' . $e->getMessage());
         }
     }
 
     /**
-     * [FUNGSI BARU] Untuk update FCM token jika pengguna sudah login.
+     * Untuk update FCM token jika pengguna sudah login.
+     * (Fungsi ini tetap ada jika suatu saat Anda memerlukannya, tapi tidak akan terpanggil saat login)
      */
     public function updateFcmToken(Request $request)
     {
@@ -115,16 +119,17 @@ class AuthController extends Controller
         ]);
 
         if ($validator->fails()) {
-            return response()->json(['status' => 'error', 'message' => 'FCM token is required.'], 400);
+            return response()->json(['status' => 'error', 'message' => 'FCM token wajib diisi.'], 400);
         }
 
         $user = $request->user(); // Mengambil pengguna yang sedang login (via token)
         if ($user) {
             $user->fcm_token = $request->fcm_token;
             $user->save();
-            return response()->json(['status' => 'success', 'message' => 'FCM token updated successfully.']);
+            return response()->json(['status' => 'success', 'message' => 'FCM token berhasil diperbarui.']);
         }
 
-        return response()->json(['status' => 'error', 'message' => 'User not authenticated.'], 401);
+        return response()->json(['status' => 'error', 'message' => 'User tidak terautentikasi.'], 401);
     }
 }
+
