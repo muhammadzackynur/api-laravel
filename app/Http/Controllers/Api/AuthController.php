@@ -9,8 +9,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use Kreait\Firebase\Messaging\CloudMessage;
-use Kreait\Firebase\Messaging\Notification;
+use App\Jobs\SendWelcomeNotification; // <-- [PERUBAHAN] Tambahkan ini
 
 class AuthController extends Controller
 {
@@ -19,35 +18,49 @@ class AuthController extends Controller
      */
     public function register(Request $request)
     {
-        $validator = Validator::make($request->all(), [
-            'email' => 'required|string|email|max:255|unique:users',
-            'password' => 'required|string|min:6',
-            'fcm_token' => 'nullable|string', // Validasi untuk fcm_token
-        ]);
+        Log::info('Menerima request registrasi:', $request->all());
 
-        if ($validator->fails()) {
+        try {
+            $validator = Validator::make($request->all(), [
+                'email' => 'required|string|email|max:255|unique:users',
+                'password' => 'required|string|min:6',
+                'fcm_token' => 'nullable|string',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => $validator->errors()->first()
+                ], 400);
+            }
+
+            $user = User::create([
+                'name' => explode('@', $request->email)[0],
+                'email' => $request->email,
+                'password' => Hash::make($request->password),
+                'fcm_token' => $request->fcm_token,
+            ]);
+
+            // [PERUBAHAN] Kirim notifikasi menggunakan Job
+            if (!empty($user->fcm_token)) {
+                Log::info('Memasukkan SendWelcomeNotification ke dalam antrian untuk token: ' . $user->fcm_token);
+                SendWelcomeNotification::dispatch($user->fcm_token);
+            } else {
+                Log::warning('Registrasi berhasil namun fcm_token tidak ada.');
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Registrasi Berhasil! Silakan masuk.'
+            ], 201);
+
+        } catch (\Exception $e) {
+            Log::error('GAGAL SAAT REGISTRASI: ' . $e->getMessage());
             return response()->json([
                 'status' => 'error',
-                'message' => $validator->errors()->first()
-            ], 400);
+                'message' => 'Terjadi kesalahan pada server.'
+            ], 500);
         }
-
-        $user = User::create([
-            'name' => explode('@', $request->email)[0], // Menggunakan bagian email sebagai nama default
-            'email' => $request->email,
-            'password' => Hash::make($request->password),
-            'fcm_token' => $request->fcm_token, // Menyimpan fcm_token saat registrasi
-        ]);
-
-        // Kirim notifikasi jika token ada
-        if ($user->fcm_token) {
-            $this->sendRegistrationNotification($user->fcm_token);
-        }
-
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Registrasi Berhasil! Silakan masuk.'
-        ], 201);
     }
 
     /**
@@ -55,7 +68,6 @@ class AuthController extends Controller
      */
     public function login(Request $request)
     {
-        // [PERBAIKAN] Validasi disederhanakan, hanya untuk email dan password
         $validator = Validator::make($request->all(), [
             'email' => 'required|email',
             'password' => 'required|string',
@@ -77,8 +89,6 @@ class AuthController extends Controller
 
         $user = User::where('email', $request->email)->firstOrFail();
         
-        // [PERBAIKAN] Logika pembaruan fcm_token dihapus dari fungsi login
-        
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
@@ -88,29 +98,12 @@ class AuthController extends Controller
             'token_type' => 'Bearer',
         ], 200);
     }
-
-    /**
-     * Mengirim notifikasi selamat datang.
-     */
-    private function sendRegistrationNotification($fcmToken)
-    {
-        try {
-            $messaging = app('firebase.messaging');
-            $notification = Notification::create('Selamat Datang!', 'Registrasi Anda di aplikasi Rencanapa berhasil.');
-
-            $message = CloudMessage::withTarget('token', $fcmToken)
-                ->withNotification($notification);
-
-            $messaging->send($message);
-        } catch (\Exception $e) {
-            // Jika gagal, catat error di log Laravel tapi jangan hentikan proses registrasi
-            Log::error('Gagal mengirim notifikasi FCM: ' . $e->getMessage());
-        }
-    }
+    
+    // [PERUBAHAN] Fungsi sendRegistrationNotification sudah tidak diperlukan di sini
+    // karena logikanya sudah dipindah ke dalam Job. Anda bisa menghapusnya.
 
     /**
      * Untuk update FCM token jika pengguna sudah login.
-     * (Fungsi ini tetap ada jika suatu saat Anda memerlukannya, tapi tidak akan terpanggil saat login)
      */
     public function updateFcmToken(Request $request)
     {
@@ -122,7 +115,7 @@ class AuthController extends Controller
             return response()->json(['status' => 'error', 'message' => 'FCM token wajib diisi.'], 400);
         }
 
-        $user = $request->user(); // Mengambil pengguna yang sedang login (via token)
+        $user = $request->user();
         if ($user) {
             $user->fcm_token = $request->fcm_token;
             $user->save();
@@ -132,4 +125,3 @@ class AuthController extends Controller
         return response()->json(['status' => 'error', 'message' => 'User tidak terautentikasi.'], 401);
     }
 }
-
