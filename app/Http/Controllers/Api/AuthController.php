@@ -9,7 +9,9 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use App\Jobs\SendWelcomeNotification; // <-- [PERUBAHAN] Tambahkan ini
+use App\Jobs\SendWelcomeNotification;
+use Illuminate\Support\Facades\Http; // <-- Penting untuk koneksi ke Google
+use Illuminate\Support\Str; // <-- Penting untuk membuat password acak
 
 class AuthController extends Controller
 {
@@ -41,7 +43,6 @@ class AuthController extends Controller
                 'fcm_token' => $request->fcm_token,
             ]);
 
-            // [PERUBAHAN] Kirim notifikasi menggunakan Job
             if (!empty($user->fcm_token)) {
                 Log::info('Memasukkan SendWelcomeNotification ke dalam antrian untuk token: ' . $user->fcm_token);
                 SendWelcomeNotification::dispatch($user->fcm_token);
@@ -64,7 +65,7 @@ class AuthController extends Controller
     }
 
     /**
-     * Handle user login.
+     * Handle user login (pengguna biasa dari database).
      */
     public function login(Request $request)
     {
@@ -99,8 +100,67 @@ class AuthController extends Controller
         ], 200);
     }
     
-    // [PERUBAHAN] Fungsi sendRegistrationNotification sudah tidak diperlukan di sini
-    // karena logikanya sudah dipindah ke dalam Job. Anda bisa menghapusnya.
+    /**
+     * [PERBAIKAN] Handle admin login dari Google Sheet menggunakan ID.
+     */
+    public function loginAdmin(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'admin_id' => 'required|string', // Hanya validasi admin_id
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['status' => 'error', 'message' => $validator->errors()->first()], 400);
+        }
+
+        // GANTI DENGAN URL WEB APP BARU DARI GOOGLE SCRIPT ANDA
+        $googleScriptUrl = 'https://script.google.com/macros/s/AKfycbyKInb4bBsCwcg25VdiOIp1ZrNBfIfyMx6eSH12AKH7HFdfs10al69aQYoUn-T2_iT67g/exec'; 
+
+        try {
+            // Gunakan ->withoutVerifying() untuk menghindari error SSL di lokal
+            $response = Http::withoutVerifying()->post($googleScriptUrl, [
+                'action' => 'adminLoginWithId',
+                'admin_id' => $request->admin_id,
+            ]);
+
+            $data = $response->json();
+
+            if (isset($data['status']) && $data['status'] == 'success') {
+                // Buat user bayangan unik di DB untuk keperluan generate token
+                $adminEmail = $request->admin_id . '@admin.local';
+                $adminUser = User::firstOrCreate(
+                    ['email' => $adminEmail],
+                    [
+                        'name' => 'Admin (' . $request->admin_id . ')', 
+                        'password' => Hash::make(Str::random(10)), // Buat password acak
+                        'is_admin' => true // Tandai sebagai admin di DB untuk referensi
+                    ]
+                );
+
+                $token = $adminUser->createToken('admin_auth_token_from_sheet')->plainTextToken;
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Login Admin Berhasil!',
+                    'access_token' => $token,
+                    'token_type' => 'Bearer',
+                ], 200);
+
+            } else {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => $data['message'] ?? 'ID Admin tidak valid.'
+                ], 401);
+            }
+
+        } catch (\Exception $e) {
+            Log::error('GAGAL MENGHUBUNGI GOOGLE SCRIPT: ' . $e->getMessage());
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Tidak dapat menghubungi server otentikasi.'
+            ], 500);
+        }
+    }
 
     /**
      * Untuk update FCM token jika pengguna sudah login.
