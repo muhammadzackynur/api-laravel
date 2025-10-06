@@ -10,8 +10,8 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use App\Jobs\SendWelcomeNotification;
-use Illuminate\Support\Facades\Http; // <-- Penting untuk koneksi ke Google
-use Illuminate\Support\Str; // <-- Penting untuk membuat password acak
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 
 class AuthController extends Controller
 {
@@ -101,39 +101,45 @@ class AuthController extends Controller
     }
     
     /**
-     * [PERBAIKAN] Handle admin login dari Google Sheet menggunakan ID.
+     * Handle admin login dari Google Sheet menggunakan ID.
      */
     public function loginAdmin(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'admin_id' => 'required|string', // Hanya validasi admin_id
+            'admin_id' => 'required|string',
         ]);
 
         if ($validator->fails()) {
             return response()->json(['status' => 'error', 'message' => $validator->errors()->first()], 400);
         }
-
-        // GANTI DENGAN URL WEB APP BARU DARI GOOGLE SCRIPT ANDA
+        
+        // Ganti dengan URL Web App BARU Anda
         $googleScriptUrl = 'https://script.google.com/macros/s/AKfycbyKInb4bBsCwcg25VdiOIp1ZrNBfIfyMx6eSH12AKH7HFdfs10al69aQYoUn-T2_iT67g/exec'; 
 
         try {
-            // Gunakan ->withoutVerifying() untuk menghindari error SSL di lokal
-            $response = Http::withoutVerifying()->post($googleScriptUrl, [
+            $response = Http::withoutVerifying()->asJson()->post($googleScriptUrl, [
                 'action' => 'adminLoginWithId',
                 'admin_id' => $request->admin_id,
             ]);
 
+            if (!$response->successful()) {
+                Log::error('Google Script Gagal Dihubungi', [
+                    'status' => $response->status(),
+                    'body' => $response->body()
+                ]);
+                return response()->json(['status' => 'error', 'message' => 'Server otentikasi tidak merespons dengan benar.'], 500);
+            }
+
             $data = $response->json();
 
             if (isset($data['status']) && $data['status'] == 'success') {
-                // Buat user bayangan unik di DB untuk keperluan generate token
                 $adminEmail = $request->admin_id . '@admin.local';
                 $adminUser = User::firstOrCreate(
                     ['email' => $adminEmail],
                     [
                         'name' => 'Admin (' . $request->admin_id . ')', 
-                        'password' => Hash::make(Str::random(10)), // Buat password acak
-                        'is_admin' => true // Tandai sebagai admin di DB untuk referensi
+                        'password' => Hash::make(Str::random(10)),
+                        'is_admin' => true
                     ]
                 );
 
@@ -185,3 +191,4 @@ class AuthController extends Controller
         return response()->json(['status' => 'error', 'message' => 'User tidak terautentikasi.'], 401);
     }
 }
+
